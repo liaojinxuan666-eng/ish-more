@@ -1,0 +1,18 @@
+--- a/app/FileProvider/FileProviderExtension.m
++++ b/app/FileProvider/FileProviderExtension.m
+@@ -38,6 +38,15 @@
+                 return NO;
+             }
+             NSURL *container = ContainerURL();
++            if (container == nil) {
++                if (error != nil) {
++                    *error = [NSError errorWithDomain:NSFileProviderErrorDomain
++                                                 code:NSFileProviderErrorNotAuthenticated
++                                             userInfo:@{NSLocalizedDescriptionKey:
++                                                            @"The App Group container is unavailable. Reinstall a build signed with the matching App Groups entitlement."}];
++                }
++                return NO;
++            }
+             NSURL *fs_dir = [[container URLByAppendingPathComponent:@"roots"]
+                       URLByAppendingPathComponent:self.domain.identifier];
+             _root = [fs_dir URLByAppendingPathComponent:@"data"];

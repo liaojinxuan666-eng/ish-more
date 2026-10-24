@@ -7,4 +7,4 @@
 
 #import <Foundation/Foundation.h>
 
-NSURL *ContainerURL(void);
+NSURL * _Nullable ContainerURL(void);

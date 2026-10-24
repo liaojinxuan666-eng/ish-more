@@ -15,12 +15,61 @@ static NSURL *RootsDir(void) {
     static NSURL *rootsDir;
     static dispatch_once_t token;
     dispatch_once(&token, ^{
-        rootsDir = [ContainerURL() URLByAppendingPathComponent:@"roots"];
         NSFileManager *manager = [NSFileManager defaultManager];
-        [manager createDirectoryAtURL:rootsDir
-          withIntermediateDirectories:YES
-                           attributes:@{}
-                                error:nil];
+        NSError *error = nil;
+
+        // Prefer the shared container so the File Provider can access this root.
+        // Never pass a nil URL to NSFileManager.
+        NSURL *container = ContainerURL();
+        if (container != nil) {
+            NSURL *sharedRoots = [container URLByAppendingPathComponent:@"roots" isDirectory:YES];
+            if ([manager createDirectoryAtURL:sharedRoots
+                  withIntermediateDirectories:YES
+                                   attributes:nil
+                                        error:&error]) {
+                rootsDir = sharedRoots;
+                return;
+            }
+            NSLog(@"[iSH More] Cannot create App Group roots directory %@: %@", sharedRoots, error);
+            error = nil;
+        }
+
+        // Keep the terminal usable if this copy was installed without a working
+        // App Group entitlement. File Provider sharing will remain unavailable
+        // until the app and extension are signed with the matching App Group.
+        NSURL *applicationSupport = [[manager URLsForDirectory:NSApplicationSupportDirectory
+                                                       inDomains:NSUserDomainMask] firstObject];
+        if (applicationSupport != nil) {
+            NSURL *privateRoots = [[applicationSupport URLByAppendingPathComponent:@"iSHMore" isDirectory:YES]
+                                   URLByAppendingPathComponent:@"roots" isDirectory:YES];
+            if ([manager createDirectoryAtURL:privateRoots
+                  withIntermediateDirectories:YES
+                                   attributes:nil
+                                        error:&error]) {
+                rootsDir = privateRoots;
+                NSLog(@"[iSH More] Using private roots directory %@; File Provider sharing is disabled", privateRoots);
+                return;
+            }
+            NSLog(@"[iSH More] Cannot create private roots directory %@: %@", privateRoots, error);
+            error = nil;
+        }
+
+        // Last-resort fallback; normally Application Support is available.
+        NSURL *documents = [[manager URLsForDirectory:NSDocumentDirectory
+                                              inDomains:NSUserDomainMask] firstObject];
+        if (documents != nil) {
+            NSURL *lastResort = [[documents URLByAppendingPathComponent:@"iSHMore" isDirectory:YES]
+                                 URLByAppendingPathComponent:@"roots" isDirectory:YES];
+            if ([manager createDirectoryAtURL:lastResort
+                  withIntermediateDirectories:YES
+                                   attributes:nil
+                                        error:&error]) {
+                rootsDir = lastResort;
+                NSLog(@"[iSH More] Using Documents fallback %@; File Provider sharing is disabled", lastResort);
+                return;
+            }
+        }
+        NSLog(@"[iSH More] FATAL: no usable roots directory: %@", error);
     });
     return rootsDir;
 }
@@ -39,8 +88,17 @@ static NSString *kDefaultRoot = @"Default Root";
 - (instancetype)init {
     if (self = [super init]) {
         NSError *error = nil;
-        NSArray<NSString *> *rootNames = [NSFileManager.defaultManager contentsOfDirectoryAtPath:RootsDir().path error:&error];
-        NSAssert(error == nil, @"couldn't list roots: %@", error);
+        NSURL *rootsDirectory = RootsDir();
+        if (rootsDirectory == nil) {
+            NSLog(@"[iSH More] Failed to initialize any filesystem storage directory");
+            return nil;
+        }
+        NSArray<NSString *> *rootNames = [NSFileManager.defaultManager
+            contentsOfDirectoryAtPath:rootsDirectory.path error:&error];
+        if (rootNames == nil) {
+            NSLog(@"[iSH More] Cannot list roots at %@: %@", rootsDirectory, error);
+            rootNames = @[];
+        }
         self.roots = [rootNames mutableCopy];
         if (!self.roots.count) {
             // import default root
@@ -214,7 +272,7 @@ void root_progress_callback(void *cookie, double progress, const char *message, 
         return NO;
     }
     NSAssert([self.roots containsObject:name], @"root does not exist: %@", name);
-    
+
     if (![NSFileManager.defaultManager moveItemAtURL:[self rootUrl:name] toURL:[self rootUrl:newName] error:error])
         return NO;
     NSUInteger index = [self.roots indexOfObject:name];

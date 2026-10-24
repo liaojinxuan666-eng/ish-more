@@ -37,11 +37,11 @@ static NSDictionary *AppEntitlements(void) {
     static NSDictionary *entitlements;
     if (entitlements != nil)
         return entitlements;
-    
+
     // Inspired by codesign.c in Darwin sources for Security.framework
-    
+
     const struct mach_header_64 *header = &_mh_execute_header;
-    
+
     // Simulator executables have fake entitlements in the code signature. The real entitlements can be found in an __entitlements section.
     size_t entitlements_size;
     char *entitlements_data = (char *) getsectiondata(header, "__TEXT", "__entitlements", &entitlements_size);
@@ -54,7 +54,7 @@ static NSDictionary *AppEntitlements(void) {
                                                                          format:nil
                                                                           error:nil];
     }
-    
+
     // Find the LC_CODE_SIGNATURE
     struct load_command *lc = (void *) (header + 1);
     struct linkedit_data_command *cs_lc = NULL;
@@ -75,22 +75,45 @@ static NSDictionary *AppEntitlements(void) {
     [fileHandle seekToFileOffset:cs_lc->dataoff];
     NSData *csData = [fileHandle readDataOfLength:cs_lc->datasize];
     [fileHandle closeFile];
+
+    // Do not trust offsets or lengths read from the code signature until they
+    // have been checked. Unsigned/ad-hoc sideloaded builds may not contain the
+    // entitlement blob this code expects.
+    size_t headerLength = offsetof(struct cs_superblob, index);
+    if (csData.length < headerLength)
+        return nil;
+
     const struct cs_superblob *cs = csData.bytes;
     if (ntohl(cs->magic) != CSMAGIC_EMBEDDED_SIGNATURE)
         return nil;
-    
-    // Find the entitlements in the code signature
+
+    uint32_t superblobLength = ntohl(cs->length);
+    uint32_t count = ntohl(cs->count);
+    if (superblobLength < headerLength || superblobLength > csData.length ||
+        count > (superblobLength - headerLength) / sizeof(struct cs_blob_index))
+        return nil;
+
+    // Find the entitlements in the code signature.
     NSData *entitlementsData = nil;
-    for (uint32_t i = 0; i < ntohl(cs->count); i++) {
-        struct cs_entitlements *ents = (void *) ((char *) cs + ntohl(cs->index[i].offset));
-        if (ntohl(ents->magic) == CSMAGIC_EMBEDDED_ENTITLEMENTS) {
+    size_t entitlementHeaderLength = offsetof(struct cs_entitlements, entitlements);
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t offset = ntohl(cs->index[i].offset);
+        if (offset > superblobLength || entitlementHeaderLength > superblobLength - offset)
+            continue;
+
+        struct cs_entitlements *ents = (void *) ((char *) cs + offset);
+        uint32_t blobLength = ntohl(ents->length);
+        if (ntohl(ents->magic) == CSMAGIC_EMBEDDED_ENTITLEMENTS &&
+            blobLength >= entitlementHeaderLength &&
+            blobLength <= superblobLength - offset) {
             entitlementsData = [NSData dataWithBytes:ents->entitlements
-                                              length:ntohl(ents->length) - offsetof(struct cs_entitlements, entitlements)];
+                                              length:blobLength - entitlementHeaderLength];
+            break;
         }
     }
     if (entitlementsData == nil)
         return nil;
-    
+
     return entitlements = [NSPropertyListSerialization propertyListWithData:entitlementsData
                                                                     options:NSPropertyListImmutable
                                                                      format:nil
@@ -98,10 +121,29 @@ static NSDictionary *AppEntitlements(void) {
 }
 
 NSArray<NSString *> *CurrentAppGroups(void) {
-    return AppEntitlements()[@"com.apple.security.application-groups"];
+    id value = AppEntitlements()[@"com.apple.security.application-groups"];
+    if (![value isKindOfClass:NSArray.class]) {
+        NSLog(@"[iSH More] App Group entitlement is missing or unreadable");
+        return @[];
+    }
+
+    NSMutableArray<NSString *> *groups = [NSMutableArray array];
+    for (id candidate in (NSArray *)value) {
+        if ([candidate isKindOfClass:NSString.class] && [candidate length] > 0)
+            [groups addObject:candidate];
+    }
+    return groups;
 }
 
 NSURL *ContainerURL(void) {
-    NSString *appGroup = CurrentAppGroups()[0];
-    return [NSFileManager.defaultManager containerURLForSecurityApplicationGroupIdentifier:appGroup];
+    for (NSString *appGroup in CurrentAppGroups()) {
+        NSURL *container = [NSFileManager.defaultManager
+            containerURLForSecurityApplicationGroupIdentifier:appGroup];
+        if (container != nil)
+            return container;
+        NSLog(@"[iSH More] App Group container is unavailable: %@", appGroup);
+    }
+
+    NSLog(@"[iSH More] No usable App Group container. Check the signed entitlements.");
+    return nil;
 }
