@@ -8,6 +8,7 @@
 #import <MobileCoreServices/MobileCoreServices.h>
 #import <dispatch/dispatch.h>
 #include <dirent.h>
+#include <sys/event.h>
 #import "FileProviderExtension.h"
 #import "FileProviderEnumerator.h"
 #import "FileProviderItem.h"
@@ -46,10 +47,8 @@
         return;
     }
 
-    unsigned long mask = DISPATCH_VNODE_NOTE_WRITE |
-                         DISPATCH_VNODE_NOTE_DELETE |
-                         DISPATCH_VNODE_NOTE_RENAME |
-                         DISPATCH_VNODE_NOTE_ATTRIB;
+    // Vnode dispatch sources use NOTE_* masks from <sys/event.h>.
+    unsigned long mask = NOTE_WRITE | NOTE_DELETE | NOTE_RENAME | NOTE_ATTRIB;
     dispatch_source_t source = dispatch_source_create(
         DISPATCH_SOURCE_TYPE_VNODE,
         (uintptr_t)fd,
