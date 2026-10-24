@@ -1,0 +1,78 @@
+name: iOS Build (unsigned IPA)
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    name: iOS device build
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Check out source and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: brew install meson ninja llvm lld libarchive
+
+      - name: Show Xcode environment
+        run: |
+          xcodebuild -version
+          xcodebuild -list -project iSH.xcodeproj
+
+      - name: Build for iPhone and iPad
+        run: |
+          xcodebuild \
+            -project iSH.xcodeproj \
+            -scheme iSH \
+            -configuration Release \
+            -sdk iphoneos \
+            -arch arm64 \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package unsigned IPA and app archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCT_DIR="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos"
+          APP_PATH="$PRODUCT_DIR/iSH.app"
+          if [[ ! -d "$APP_PATH" ]]; then
+            echo "::error::Expected app was not produced at $APP_PATH"
+            find "$RUNNER_TEMP/DerivedData/Build/Products" -maxdepth 4 -name '*.app' -print || true
+            exit 1
+          fi
+
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist"
+
+          mkdir -p "$RUNNER_TEMP/package/Payload"
+          ditto "$APP_PATH" "$RUNNER_TEMP/package/Payload/iSH.app"
+          cd "$RUNNER_TEMP/package"
+          /usr/bin/zip -qry "$RUNNER_TEMP/iSH-More-1.0.0-rc1-unsigned.ipa" Payload
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$RUNNER_TEMP/iSH-More-1.0.0-rc1-app.zip"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: iSH-More-1.0.0-rc1-unsigned-ipa
+          path: ${{ runner.temp }}/iSH-More-1.0.0-rc1-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload app bundle for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: iSH-More-1.0.0-rc1-app
+          path: ${{ runner.temp }}/iSH-More-1.0.0-rc1-app.zip
+          if-no-files-found: error
+          retention-days: 14
