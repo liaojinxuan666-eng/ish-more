@@ -12,10 +12,15 @@
 #include "kernel/personality.h"
 
 int mount_root(const struct fs_ops *fs, const char *source) {
-    char source_realpath[MAX_PATH + 1];
-    if (realpath(source, source_realpath) == NULL)
-        return errno_map();
-    int err = do_mount(fs, source_realpath, "", "", 0);
+    /*
+     * Keep the caller's path here instead of resolving it with realpath().
+     * The fake filesystem derives its sibling metadata database path from
+     * the original .../data path before realfs.mount() opens the directory.
+     * If source is a symlink to Documents/Linux, resolving it here changes
+     * the final component from "data" to "Linux" and fakefs_mount aborts.
+     * realfs.mount() resolves the path after fakefs_mount has saved meta.db.
+     */
+    int err = do_mount(fs, source, "", "", 0);
     if (err < 0)
         return err;
     return 0;
